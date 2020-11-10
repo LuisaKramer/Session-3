@@ -1,0 +1,204 @@
+---
+title: "Data Science 3. Hausaufgabe"
+output:
+  html_document:
+    df_print: paged
+---
+
+# Libraries einlesen 
+
+```{r}
+library(tidyverse)
+library(arules)
+library(arulesViz)
+library(stringr)
+```
+
+# Daten aufbereiten - Zusammenführen der Datensätze in einer gemeinsamen csv-Datei
+
+```{r}
+BX_Book_Ratings <- read_delim("BX-Book-Ratings.csv", 
+    ";", escape_double = FALSE, trim_ws = TRUE)
+BX_Books <- read_delim("BX-Books.csv", 
+    ";", escape_double = FALSE, trim_ws = TRUE)
+BX_Users <- read_delim("BX-Users.csv", 
+    ";", escape_double = FALSE, trim_ws = TRUE)
+```
+
+
+```{r}
+books <- BX_Books %>%
+  select(ISBN,`Book-Title`,`Book-Author`,`Year-Of-Publication`,Publisher)
+rm(BX_Books)
+users <- BX_Users %>%
+  mutate(Age = as.numeric(Age))
+rm(BX_Users)
+ratings <- BX_Book_Ratings %>%
+  left_join(books)
+rm(BX_Book_Ratings)
+ratings <- ratings %>%
+  filter(!is.na(`Book-Title`))
+users <- users %>%
+  filter(!is.na(Age)) %>%
+  mutate(country = str_remove(Location,".*,")) %>%
+  filter(country != "")
+all <- ratings %>%
+  left_join(users) %>%
+  select(-Location)
+write_csv(all, "all.csv")
+```
+
+# Was mir an der Datenqualität auffällt: 
+# Autoren, die in Großbuchstaben eingeben wurden, müssen bereinigt werden, ansonsten werden sie als unterschiedliche Personen erkannt und die Regeln empfehlen ein und dieselbe Person
+# Umlaute (z.B. bei Patrick Süßkind werden mit Sonderzeichenketten ausgegeben)
+# O' (z.B. O'brian, O'connor - der Anfangsbuchstabe nach dem Apostroph ist durch den str_to_title Befehl klein)
+# Mc (z.B. Mcnaughty etc., gleiches Problem wie eben beschrieben)
+# J. K. Rowling / Joane K. Rowling - ausgeschriebene vs. abgekürzte Autorennamen
+# Mehrer Vornamen bzw. Middle Names - manche sind mit Leerzeichen getrennt, andere nicht 
+
+# Test der Datenqualität Optimierung (hat leider nicht so funktioniert):
+#```{r}
+#Wort <- "sdsdsO'briansdsds" %>%
+#test <- (str_view_all(Wort,"O'brian")) %>%
+#mutate(Wort = str_to_title(test))
+#```
+
+
+# Beheben mit regulären Ausdrücken
+
+```{r}
+all <- read_csv("all.csv") %>%
+  mutate(`Book-Author` = str_to_title(`Book-Author`))
+```
+
+# Analyse, bei der die Autoren in der Transaktionen enthalten sind: 
+
+```{r message=FALSE}
+i <- split(all$`Book-Author`,all$`User-ID`)
+txn <- as(i, "transactions")
+basket_rules <- apriori(txn, parameter = list(sup = 0.0015, conf = 0.001, minlen=2, target="rules"))
+```
+
+
+
+```{r}
+myRules_Direct <- as(basket_rules, "data.frame")
+basket_rules_hi <- head(basket_rules, by ="lift",100)
+head(myRules_Direct, 214)
+```
+
+
+```{r}
+plot(basket_rules_hi, method="graph", main="Books")
+```
+# Hintergrundgedanke war:
+# Es werden nur Autoren weiterempfohlen, deren Bücher auch mehrheitlich gut bewertet wurden. Dafür wurden nur Bücher gezählt, für die mind. 2 Bewertungen abgegeben wurden, anschließend wurde die Durchschnittsbewertung gebildet und nur die Bücher weiterempfohlen, die besser als 7 bewertet wurden
+
+#```{r}
+#all %>%
+#  group_by(ISBN) %>% 
+#  summarise(Durchschnittsbewertung = mean(`Book-Rating`), AnzahlBewertungen = n()) %>%
+#  filter(AnzahlBewertungen > 2) %>%
+#  filter(Durchschnittsbewertung > 7) %>%
+#  arrange(desc(Durchschnittsbewertung))
+#```
+
+# Analyse, in der Autoren mit mehrheitlich gut bewerteten Büchern enthalten sind: 
+
+#```{r message=FALSE}
+#j <- split(all$`Book-Author`,all$`User-ID`)
+#gb <- as(j, "transactions")
+#goodbooks_rules <- apriori(gb, parameter = list(sup = 0.0015, conf = 0.001, minlen=2, target="rules"))
+#```
+
+#```{r}
+#goodBooks_Direct <- as(goodbooks_rules, "data.frame")
+#goodbooks_rules_hi <- head(goodbooks_rules, by ="lift",100)
+#head(goodBooks_Direct, 100)
+#```
+
+#```{r}
+#plot(goodbooks_rules_hi, method="graph", main="Goodbooks")
+#```
+
+# Leider hat es nicht funktioniert. Deshalb habe ich es mit der "einfachen Variante" gelöst:
+
+# Features: Filtern der Warenkörbe nach Land "Germany", Alter und Buchbewertung und mindestens mit gut bewertet sind
+
+```{r}
+(all_country <- all %>%
+  select(`Book-Author`,`User-ID`,country,Age,`Book-Rating`) %>%
+  filter(country == "germany",Age > 0, Age < 25, `Book-Rating` > 7))
+```
+
+# Anzeige der Autoren, die von Leuten aus Deutschland in meinem Alter gelesen werden
+
+```{r message=FALSE}
+k <- split(all_country$`Book-Author`,all_country$`User-ID`)
+txn2 <- as(k, "transactions")
+basket_rules2 <- apriori(txn2, parameter = list(sup = 0.005, conf = 0.001, minlen=2, target="rules"))
+```
+
+```{r}
+myRules_Direct2 <- as(basket_rules2, "data.frame")
+basket_rules_hi2 <- head(basket_rules2, by ="lift",100)
+head(myRules_Direct2, 100)
+```
+
+```{r}
+plot(basket_rules_hi2, method="graph", main="Country")
+```
+
+# Features: Filtern der Warenkörbe nach Land "USA", Alter und Buchbewertung
+
+```{r}
+(all_countryUSA <- all %>%
+  select(`Book-Author`,`User-ID`,country,Age,`Book-Rating`) %>%
+  filter(country == "usa",Age > 0, Age < 25, `Book-Rating` > 7))
+```
+# Vergleich mit oben: 
+
+# Anzeige der Autoren, die von Leuten aus den USA in meinem Alter gelesen werden und mindestens mit gut bewertet sind
+
+```{r message=FALSE}
+l <- split(all_countryUSA$`Book-Author`,all_countryUSA$`User-ID`)
+txnUSA <- as(l, "transactions")
+basket_rulesUSA <- apriori(txnUSA, parameter = list(sup = 0.0025, conf = 0.001, minlen=2, target="rules"))
+```
+
+```{r}
+myRules_DirectUSA <- as(basket_rulesUSA, "data.frame")
+basket_rules_hiUSA <- head(basket_rulesUSA, by ="lift",100)
+head(myRules_DirectUSA, 100)
+```
+
+```{r}
+plot(basket_rules_hiUSA, method="graph", main="Country")
+```
+
+# Features: Filtern der Warenkörbe nach Erscheinungsjahr
+```{r}
+(all_year <- all %>%
+  select(`Book-Author`,`User-ID`,country,Age,`Book-Rating`,`Year-Of-Publication`) %>%
+  filter(`Year-Of-Publication` > 2000))
+```
+
+# Anzeige von Warenkörben mit Autoren, die aktuell etwas publiziert haben
+
+```{r message=FALSE}
+h <- split(all_year$`Book-Author`,all_year$`User-ID`)
+txnYear <- as(h, "transactions")
+basket_rulesYear <- apriori(txnYear, parameter = list(sup = 0.0012, conf = 0.001, minlen=2, target="rules"))
+```
+
+```{r}
+myRules_DirectYear <- as(basket_rulesYear, "data.frame")
+basket_rules_hiYear <- head(basket_rulesYear, by ="lift",100)
+head(myRules_DirectYear, 100)
+```
+
+
+```{r}
+plot(basket_rules_hiYear, method="graph", main="Year")
+```
+
